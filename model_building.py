@@ -1,73 +1,147 @@
-import pandas as pd
 import numpy as np
-import seaborn as sns
-import matplotlib
+import pandas as pd
 
-import matplotlib.pyplot as plt
-from scipy import stats
-from scipy.stats import skew
-from scipy.stats import norm
-from scipy.stats.stats import pearsonr
-
-from sklearn.linear_model import LinearRegression, Ridge, RidgeCV, ElasticNet, Lasso, LassoCV
-from sklearn.model_selection import cross_val_score
-from sklearn.model_selection import KFold
-from sklearn.metrics import r2_score
+from sklearn.ensemble import GradientBoostingRegressor, AdaBoostRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import Lasso, LassoCV
 from sklearn.metrics import mean_squared_error
-
-# Load training and test data.
-train = pd.read_csv("HousePricesTrainClean.csv")
-X_test = pd.read_csv("HousePricesTestClean.csv")
-X_train = train.drop("SalePrice", axis=1)
-# Save target feature.
-y = train['SalePrice']
+from sklearn.model_selection import KFold
+from sklearn.model_selection import cross_val_score, GridSearchCV
+from sklearn.model_selection import train_test_split
+from sklearn.svm import SVR
 
 
-def r2_cv(model, X_train, y, random_state=12345678):
-    r2 = cross_val_score(model, X_train, y, scoring="r2", cv=KFold(10, shuffle=True, random_state=random_state))
-    return r2
-
-
-def rmse_cv(model, X_train, y, random_state=12345678):
+def rmse_cv(model, x, y, random_state=17):
+    """Root Mean Square Error: error function used by the competition."""
     rmse = np.sqrt(-cross_val_score(
-        model, X_train, y, scoring="neg_mean_squared_error", cv=KFold(10, shuffle=True, random_state=random_state)
+        model, x, y, scoring="neg_mean_squared_error", cv=KFold(10, shuffle=True, random_state=random_state)
     ))
     return rmse
 
 
-model_simple = LinearRegression()
-model_simple.fit(X_train, y)
-yp = model_simple.predict(X_train)
+def get_best_model(model, parameters, x, y):
+    """Returns the best parameters for the model."""
+    grid_obj = GridSearchCV(model, parameters, cv=10, scoring="neg_mean_squared_error")
+    grid_obj = grid_obj.fit(x, y)
 
-# Compute R2 for training data and using crossvalidation.
-r2_simple_train = r2_score(y, yp)
-r2_xval_simple = r2_cv(model_simple, X_train, y)
+    # Set the model to the best combination of parameters.
+    print(grid_obj.best_params_)
+    return grid_obj.best_estimator_
 
-# Compute RMSE for training data and using crossvalidation.
-rmse_simple_train = mean_squared_error(y, yp, multioutput='raw_values')
-rmse_xval_simple = rmse_cv(model_simple, X_train, y)
 
-print("Linear Regression")
-print("==================================================")
-print("\t                  Train R2=%.3f" % r2_simple_train)
-print("\t10-fold Crossvalidation R2=%.3f" % (r2_xval_simple.mean()))
-print("\t                  Train RMSE=%.3f" % rmse_simple_train)
-print("\t10-fold Crossvalidation RMSE=%.3f" % (rmse_xval_simple.mean()))
+models = dict()
+rmse = dict()
 
-# Now we try Ridge (L_2) and Lasso (L_1) Regression, with cross-validation.
-model_ridge = RidgeCV(
-    alphas=[0.05, 0.1, 0.3, 1, 3, 5, 10, 15, 30, 50, 75],
-    cv=KFold(10, shuffle=True, random_state=12345678)
-).fit(X_train, y)
-model_lasso = LassoCV(
-    alphas=[1, 0.1, 0.001, 0.0005],
-    cv=KFold(10, shuffle=True, random_state=12345678)
-).fit(X_train, y)
+# Load training and test data.
+train = pd.read_csv("HousePricesTrainClean.csv")
+final_test = pd.read_csv("HousePricesTestClean.csv")
+# Save target feature.
+x = train.drop("SalePrice", axis=1)
+y = train['SalePrice']
+# Split data into test and train.
+x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.20, random_state=17)
+
+# MODELS
+
+
+# Lasso model.
+models['lasso'] = LassoCV(
+    # Search for the optimal alpha in this interval.
+    alphas=np.arange(start=0.0005, stop=0.01, step=0.0001),
+    cv=KFold(10, shuffle=True, random_state=17)
+).fit(x_train, y_train)
+rmse['lasso'] = rmse_cv(models['lasso'], x_train, y_train)
+
+print("Lasso Regression (10-fold cross-validation)")
+print("\tRMSE=%.3f for Alpha=%.3f" % (rmse['lasso'].mean(), models['lasso'].alpha_))
+
+# GBR model.
+models['gbr'] = GradientBoostingRegressor(n_estimators=200, min_samples_leaf=3, max_features=0.1, learning_rate=0.1,
+                                          max_depth=3)
+# Choose some parameter combinations to try.
+parameters = {
+    # 'learning_rate': [0.2, 0.1, 0.05],
+    # 'max_depth': [3]
+}
+# Get best combinations of parameters.
+models['gbr'] = get_best_model(models['gbr'], parameters, x_train, y_train)
+
+# Fit the best algorithm to the data.
+models['gbr'].fit(x_train, y_train)
+rmse['gbr'] = rmse_cv(models['gbr'], x_train, y_train)
+
+print("Gradient Boosting Regression (10-fold cross-validation)")
+print("\tRMSE=%.3f" % (rmse['gbr'].mean()))
+
+# Random Forest model.
+models['rf'] = RandomForestRegressor(n_estimators=175, max_depth=11)
+# Choose some parameter combinations to try.
+parameters = {
+    # 'n_estimators': [150, 175],
+    # 'max_depth': np.arange(9, 12)
+}
+
+# Get best combinations of parameters.
+models['rf'] = get_best_model(models['rf'], parameters, x_train, y_train)
+models['rf'] = models['rf'].fit(x_train, y_train)
+rmse['rf'] = rmse_cv(models['rf'], x_train, y_train)
+
+print("Random Forest Regression (10-fold cross-validation)")
+print("\tRMSE=%.3f" % (rmse['rf'].mean()))
+
+# print(pd.DataFrame({
+#    'Variable': x_train.columns,
+#    'Importance': np.round(models['rf'].feature_importances_, 4)
+# }).sort_values('Importance', ascending=False))
+
+
+# Support Vector Machines model.
+models['svm'] = SVR(gamma='auto', C=1.1)
+# Choose some parameter combinations to try.
+parameters = {
+    # 'C': [0.8, 0.9, 1, 1.1, 1.2],
+    # 'gamma': ['auto', 'scale']
+}
+# Get best combinations of parameters.
+models['svm'] = get_best_model(models['svm'], parameters, x_train, y_train)
+models['svm'] = models['svm'].fit(x_train, y_train)
+rmse['svm'] = rmse_cv(models['svm'], x_train, y_train)
+
+print("Support Vector Machines (10-fold cross-validation)")
+print("\tRMSE=%.3f" % (rmse['svm'].mean()))
+
+
+# AdaBoost model.
+models['ada'] = AdaBoostRegressor()
+# Choose some parameter combinations to try.
+parameters = {
+    'n_estimators': [150, 200, 250]
+}
+
+# Get best combinations of parameters.
+models['ada'] = get_best_model(models['ada'], parameters, x_train, y_train)
+models['ada'] = models['ada'].fit(x_train, y_train)
+rmse['ada'] = rmse_cv(models['ada'], x_train, y_train)
+
+print("AdaBoost (10-fold cross-validation)")
+print("\tRMSE=%.3f" % (rmse['ada'].mean()))
+
+
+# Compare training and testing accuracies.
+for name in rmse.keys():
+    print("%s" % (name.upper()))
+    print("\tRMSE: %.3f" % (rmse[name].mean()))
+    predictions = models[name].predict(x_test)
+    print("\tTest: %.3f" % (np.sqrt(mean_squared_error(y_test, predictions))))
+
+
+# Prediction.
+model_lasso = Lasso(alpha=0.001).fit(x, y)
+y_pred = model_lasso.predict(final_test)
 
 # Create submission.
 submission = pd.DataFrame({
-        "Id": X_test.Id,
-        # "SalePrice": pred_y
-    })
+    "Id": final_test.Id,
+    "SalePrice": y_pred
+})
 submission.to_csv('submission.csv', index=False)
-
